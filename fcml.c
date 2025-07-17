@@ -90,6 +90,15 @@ Uint16 AdcaResults[RESULTS_BUFFER_SIZE];
 Uint16 resultsIndex;
 volatile Uint16 bufferFull;
 volatile float outputVoltage;
+volatile float dutyTest;
+
+typedef struct {
+    float Kp;     // Proportional gain
+    float Ki;     // Integral gain
+    float Ts;     // Sampling time
+    float integrator; // Accumulated integral
+    float u;         // Output
+} PI_Controller;
 
 typedef struct
 {
@@ -106,6 +115,17 @@ typedef struct
 EPWM_INFO epwm1_info;
 EPWM_INFO epwm2_info;
 
+float FCML_vout;
+
+PI_Controller voutPI;
+float FCML_voutPIKp = 0.41f;
+float FCML_voutPIKi = 200.0f;
+
+float FCML_voutRef = 1.8f;
+float FCML_voutErr;
+float FCML_voutStar;
+int ctrlFlag = 0;
+
 //
 // Function Prototypes
 //
@@ -120,6 +140,9 @@ void InitEPwm2Example(void);
 __interrupt void epwm1_isr(void);
 __interrupt void epwm2_isr(void);
 void update_compare(EPWM_INFO*);
+
+void PI_Init(PI_Controller *pi, float Kp, float Ki, float Ts);
+float PI_Update(PI_Controller *pi, float error);
 
 //
 // Main
@@ -270,6 +293,7 @@ void main(void)
             // which fill the results buffer, eventually setting the bufferFull
             // flag
             //
+
             while(!bufferFull);
             bufferFull = 0; //clear the buffer full flag
         } while(1);
@@ -291,7 +315,7 @@ void ConfigureTimer(void)
     // Configure CPU-Timer 0, 1, and 2 to interrupt every second:
     // 200MHz CPU Freq, 1 second Period (in uSeconds)
     //
-    ConfigCpuTimer(&CpuTimer0, 200, 10);
+    ConfigCpuTimer(&CpuTimer0, 200, 1);
 
     //
     // To ensure precise timing, use write-only instructions to write to the
@@ -424,9 +448,9 @@ void InitEPwm1Example()
     EPwm1Regs.AQCTLA.bit.CAD = AQ_SET;          // Clear PWM1A on event A,
                                                   // down count
 
-    EPwm1Regs.AQCTLB.bit.CAU = AQ_SET;            // Set PWM1B on event B, up
+    EPwm1Regs.AQCTLB.bit.CBU = AQ_SET;            // Set PWM1B on event B, up
                                                   // count
-    EPwm1Regs.AQCTLB.bit.CAD = AQ_CLEAR;          // Clear PWM1B on event B,
+    EPwm1Regs.AQCTLB.bit.CBD = AQ_CLEAR;          // Clear PWM1B on event B,
                                                   // down count
 
     //
@@ -500,9 +524,9 @@ void InitEPwm2Example()
     EPwm2Regs.AQCTLA.bit.CAD = AQ_SET;          // Clear PWM1A on event A,
                                                   // down count
 
-    EPwm2Regs.AQCTLB.bit.CAU = AQ_SET;            // Set PWM1B on event B, up
+    EPwm2Regs.AQCTLB.bit.CBU = AQ_SET;            // Set PWM1B on event B, up
                                                   // count
-    EPwm2Regs.AQCTLB.bit.CAD = AQ_CLEAR;          // Clear PWM1B on event B,
+    EPwm2Regs.AQCTLB.bit.CBD = AQ_CLEAR;          // Clear PWM1B on event B,
                                                   // down count
 
     //
@@ -582,42 +606,42 @@ void update_compare(EPWM_INFO *epwm_info)
                 epwm_info->EPwmRegHandle->CMPA.bit.CMPA--;
             }
         }
-
-        //
-        // If we were increasing CMPB, check to see if
-        // we reached the max value.  If not, increase CMPB
-        // else, change directions and decrease CMPB
-        //
-        if(epwm_info->EPwm_CMPB_Direction == EPWM_CMP_UP)
-        {
-            if(epwm_info->EPwmRegHandle->CMPB.bit.CMPB < epwm_info->EPwmMaxCMPB)
-            {
-                epwm_info->EPwmRegHandle->CMPB.bit.CMPB++;
-            }
-            else
-            {
-                epwm_info->EPwm_CMPB_Direction = EPWM_CMP_DOWN;
-                epwm_info->EPwmRegHandle->CMPB.bit.CMPB--;
-            }
-        }
-
-        //
-        // If we were decreasing CMPB, check to see if
-        // we reached the min value.  If not, decrease CMPB
-        // else, change directions and increase CMPB
-        //
-        else
-        {
-            if(epwm_info->EPwmRegHandle->CMPB.bit.CMPB == epwm_info->EPwmMinCMPB)
-            {
-                epwm_info->EPwm_CMPB_Direction = EPWM_CMP_UP;
-                epwm_info->EPwmRegHandle->CMPB.bit.CMPB++;
-            }
-            else
-            {
-                epwm_info->EPwmRegHandle->CMPB.bit.CMPB--;
-            }
-        }
+        epwm_info->EPwmRegHandle->CMPB.bit.CMPB = epwm_info->EPwmRegHandle->CMPA.bit.CMPA;
+//        //
+//        // If we were increasing CMPB, check to see if
+//        // we reached the max value.  If not, increase CMPB
+//        // else, change directions and decrease CMPB
+//        //
+//        if(epwm_info->EPwm_CMPB_Direction == EPWM_CMP_UP)
+//        {
+//            if(epwm_info->EPwmRegHandle->CMPB.bit.CMPB < epwm_info->EPwmMaxCMPB)
+//            {
+//                epwm_info->EPwmRegHandle->CMPB.bit.CMPB++;
+//            }
+//            else
+//            {
+//                epwm_info->EPwm_CMPB_Direction = EPWM_CMP_DOWN;
+//                epwm_info->EPwmRegHandle->CMPB.bit.CMPB--;
+//            }
+//        }
+//
+//        //
+//        // If we were decreasing CMPB, check to see if
+//        // we reached the min value.  If not, decrease CMPB
+//        // else, change directions and increase CMPB
+//        //
+//        else
+//        {
+//            if(epwm_info->EPwmRegHandle->CMPB.bit.CMPB == epwm_info->EPwmMinCMPB)
+//            {
+//                epwm_info->EPwm_CMPB_Direction = EPWM_CMP_UP;
+//                epwm_info->EPwmRegHandle->CMPB.bit.CMPB++;
+//            }
+//            else
+//            {
+//                epwm_info->EPwmRegHandle->CMPB.bit.CMPB--;
+//            }
+//        }
     }
     else
     {
@@ -625,6 +649,45 @@ void update_compare(EPWM_INFO *epwm_info)
     }
 
     return;
+}
+
+void PI_Init(PI_Controller *pi, float Kp, float Ki, float Ts) {
+    pi->Kp = Kp;
+    pi->Ki = Ki;
+    pi->Ts = Ts;
+    pi->integrator = 0.0f;
+    pi->u = 0.0f;
+}
+
+float PI_Update(PI_Controller *pi, float error) {
+    // Integrate the error
+    pi->integrator += pi->Ki * pi->Ts * error;
+
+    // Compute the control output
+    pi->u = pi->Kp * error + pi->integrator;
+
+    //
+    // Reference signal limiter: Limit reference signal [0,1]
+    //
+    if (pi->u > 1.0f)
+    {
+        pi->u = 1.0f;
+     }
+     else if (pi->u < 0.0f)
+    {
+         pi->u = 0.0f;
+     }
+
+    if (pi->u > 1.0f)
+    {
+        pi->u = 1.0f;
+     }
+     else if (pi->u < 0.0f)
+    {
+         pi->u = 0.0f;
+    }
+
+    return pi->u;
 }
 
 //
@@ -635,7 +698,7 @@ __interrupt void epwm1_isr(void)
     //
     // Update the CMPA and CMPB values
     //
-    update_compare(&epwm1_info);
+//    update_compare(&epwm1_info);
 
     //
     // Clear INT flag for this timer
@@ -656,7 +719,7 @@ __interrupt void epwm2_isr(void)
     //
     // Update the CMPA and CMPB values
     //
-    update_compare(&epwm2_info);
+//    update_compare(&epwm2_info);
 
     //
     // Clear INT flag for this timer
@@ -689,7 +752,7 @@ interrupt void adca1_isr(void)
 {
     AdcaResults[resultsIndex++] = AdcaResultRegs.ADCRESULT0;
 
-    outputVoltage = (float)AdcaResultRegs.ADCRESULT0*3.3*0.00024420024420024420024; //conversion ratio 0-4095 --> 0-3.3V
+    outputVoltage = (float)AdcaResultRegs.ADCRESULT0*3.3f*0.00024420024420024420024f; //conversion ratio 0-4095 --> 0-3.3V
 
     if(RESULTS_BUFFER_SIZE <= resultsIndex)
     {
@@ -709,6 +772,80 @@ interrupt void adca1_isr(void)
     }
 
     PieCtrlRegs.PIEACK.all = PIEACK_GROUP1;
+
+    //
+    // Main control loop
+    //
+    FCML_vout = outputVoltage;
+
+    //
+    // Controller switch: ctrlFlag is 1 --> Control Mode, otherwise no PWM output and reset controller components
+    //
+    if (ctrlFlag != 1)
+    {
+        PI_Init(&voutPI, FCML_voutPIKp, FCML_voutPIKi, 0.000001f);  // Kp = 0.5, Ki = 10, Ts = 1us
+
+        //
+        // Reset controller components
+        //
+        FCML_voutErr = 0;
+        FCML_voutStar = 0;
+
+        //
+        // Block the CMPA and CMPB values
+        //
+        epwm1_info.EPwmRegHandle->CMPA.bit.CMPA = 0;
+        epwm1_info.EPwmRegHandle->CMPB.bit.CMPB = EPWM1_TIMER_TBPRD;
+        epwm2_info.EPwmRegHandle->CMPA.bit.CMPA = 0;
+        epwm2_info.EPwmRegHandle->CMPB.bit.CMPB = EPWM2_TIMER_TBPRD;
+    }
+    else
+    {
+        //
+        // Output voltage control loop: Calculate error and update PI controller
+        //
+        FCML_voutErr = FCML_voutRef - FCML_vout;
+        FCML_voutStar = PI_Update(&voutPI, FCML_voutErr);
+
+        //
+        // Reference signal limiter: Limit reference signal [0,1]
+        //
+//        if (FCML_voutStar > 1.0f)
+//        {
+//              FCML_voutStar = 1.0f;
+//         }
+//         else if (FCML_voutStar < 0.0f)
+//        {
+//              FCML_voutStar = 0.0f;
+//         }
+//
+//        if (FCML_voutStar > 1.0f)
+//        {
+//              FCML_voutStar = 1.0f;
+//         }
+//         else if (FCML_voutStar < 0.0f)
+//        {
+//              FCML_voutStar = 0.0f;
+//        }
+
+        //
+        // PWM Generator: Update the CMPA and CMPB values
+        //
+        epwm1_info.EPwmRegHandle->CMPA.bit.CMPA = FCML_voutStar*(float)EPWM1_TIMER_TBPRD;
+        epwm1_info.EPwmRegHandle->CMPB.bit.CMPB = FCML_voutStar*(float)EPWM1_TIMER_TBPRD;
+        epwm2_info.EPwmRegHandle->CMPA.bit.CMPA = FCML_voutStar*(float)EPWM2_TIMER_TBPRD;
+        epwm2_info.EPwmRegHandle->CMPB.bit.CMPB = FCML_voutStar*(float)EPWM2_TIMER_TBPRD;
+    }
+    //
+    // Update the CMPA and CMPB values
+    //
+//    epwm1_info.EPwmRegHandle->CMPA.bit.CMPA = outputVoltage*500.0f*0.030303030303030303030f;
+//    epwm2_info.EPwmRegHandle->CMPA.bit.CMPA = outputVoltage*500.0f*0.030303030303030303030f;
+//    epwm1_info.EPwmRegHandle->CMPA.bit.CMPA = dutyTest*(float)EPWM1_TIMER_TBPRD;
+//    epwm1_info.EPwmRegHandle->CMPB.bit.CMPB = dutyTest*(float)EPWM1_TIMER_TBPRD;
+//    epwm2_info.EPwmRegHandle->CMPA.bit.CMPA = dutyTest*(float)EPWM2_TIMER_TBPRD;
+//    epwm2_info.EPwmRegHandle->CMPB.bit.CMPB = dutyTest*(float)EPWM2_TIMER_TBPRD;
+
 }
 
 //
