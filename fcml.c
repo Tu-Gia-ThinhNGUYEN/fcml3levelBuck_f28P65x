@@ -115,7 +115,8 @@ typedef struct
 EPWM_INFO epwm1_info;
 EPWM_INFO epwm2_info;
 
-float FCML_vout;
+volatile float FCML_vout;
+volatile float FCML_vfc;
 
 PI_Controller voutPI;
 float FCML_voutPIKp = 0.41f;
@@ -132,7 +133,7 @@ int ctrlFlag = 0;
 __interrupt void cpuTimer0ISR(void);
 void ConfigureADC(void);
 void ConfigureTimer(void);
-void SetupADCTimer(Uint16 channel);
+void SetupADCTimer(void);
 interrupt void adca1_isr(void);
 
 void InitEPwm1Example(void);
@@ -233,9 +234,9 @@ void main(void)
     ConfigureTimer();
 
     //
-    // Setup the ADC for CPU Timer 0 triggered conversions on channel 0
+    // Setup the ADC for CPU Timer 0 triggered conversions on channel 0, 1
     //
-    SetupADCTimer(0);
+    SetupADCTimer();
 
     //
     // Enable CPU INT3 which is connected to EPWM1-3 INT:
@@ -374,7 +375,7 @@ void ConfigureADC(void)
 //
 // SetupADCTimer - Setup ADC Timer acquisition window
 //
-void SetupADCTimer(Uint16 channel)
+void SetupADCTimer(void)
 {
     Uint16 acqps;
 
@@ -394,9 +395,15 @@ void SetupADCTimer(Uint16 channel)
     // Select the channels to convert and end of conversion flag
     //
     EALLOW;
-    AdcaRegs.ADCSOC0CTL.bit.CHSEL = channel;  //SOC0 will convert pin A0
+
+    AdcaRegs.ADCSOC0CTL.bit.CHSEL = 0;  //SOC0 will convert pin A0
     AdcaRegs.ADCSOC0CTL.bit.ACQPS = acqps; //sample window is 100 SYSCLK cycles
     AdcaRegs.ADCSOC0CTL.bit.TRIGSEL = 1; //trigger on ePWM1 SOCA/C
+
+    AdcaRegs.ADCSOC1CTL.bit.CHSEL = 1;  //SOC0 will convert pin A0
+    AdcaRegs.ADCSOC1CTL.bit.ACQPS = acqps; //sample window is 100 SYSCLK cycles
+    AdcaRegs.ADCSOC1CTL.bit.TRIGSEL = 1; //trigger on ePWM1 SOCA/C
+
     AdcaRegs.ADCINTSEL1N2.bit.INT1SEL = 0; //end of SOC0 will set INT1 flag
     AdcaRegs.ADCINTSEL1N2.bit.INT1E = 1;   //enable INT1 flag
     AdcaRegs.ADCINTFLGCLR.bit.ADCINT1 = 1; //make sure INT1 flag is cleared
@@ -752,7 +759,8 @@ interrupt void adca1_isr(void)
 {
     AdcaResults[resultsIndex++] = AdcaResultRegs.ADCRESULT0;
 
-    outputVoltage = (float)AdcaResultRegs.ADCRESULT0*3.3f*0.00024420024420024420024f; //conversion ratio 0-4095 --> 0-3.3V
+    FCML_vout = (float)AdcaResultRegs.ADCRESULT0*50.0f*0.00024420024420024420024f; //conversion ratio 0-4095 --> 0-3.3V
+    FCML_vfc = (float)AdcaResultRegs.ADCRESULT1*50.0f*0.00024420024420024420024f; //conversion ratio 0-4095 --> 0-3.3V
 
     if(RESULTS_BUFFER_SIZE <= resultsIndex)
     {
@@ -776,7 +784,6 @@ interrupt void adca1_isr(void)
     //
     // Main control loop
     //
-    FCML_vout = outputVoltage;
 
     //
     // Controller switch: ctrlFlag is 1 --> Control Mode, otherwise no PWM output and reset controller components
