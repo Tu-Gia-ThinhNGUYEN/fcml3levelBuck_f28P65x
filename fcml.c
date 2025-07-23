@@ -119,13 +119,38 @@ volatile float FCML_vout;
 volatile float FCML_vfc;
 
 PI_Controller voutPI;
-float FCML_voutPIKp = 0.41f;
-float FCML_voutPIKi = 200.0f;
+PI_Controller vref1PI;
+PI_Controller vref2PI;
 
-float FCML_voutRef = 1.8f;
-float FCML_voutErr;
-float FCML_voutStar;
+//
+// Natural Balancing
+//
+//float FCML_voutPIKp = 0.41f;
+//float FCML_voutPIKi = 200.0f;
+
+//
+// Active Balancing
+//
+float FCML_voutPIKp = 0.04f;
+float FCML_voutPIKi = 100.0f;
+float FCML_vref1PIKp = 0.003f;
+float FCML_vref1PIKi = 50.0f;
+float FCML_vref2PIKp = 0.003f;
+float FCML_vref2PIKi = 50.0f;
+
+volatile float FCML_voutRef = 1.8f;
+volatile float FCML_voutErr;
+volatile float FCML_voutStar;
 int ctrlFlag = 0;
+volatile float FCML_vfcRef = 1.65f;
+volatile float FCML_vfcErr;
+volatile float FCML_vref1;
+volatile float FCML_vref2;
+volatile float FCML_vfcStar1;
+volatile float FCML_vfcStar2;
+volatile float FCML_vrefStar1;
+volatile float FCML_vrefStar2;
+
 
 //
 // Function Prototypes
@@ -144,6 +169,7 @@ void update_compare(EPWM_INFO*);
 
 void PI_Init(PI_Controller *pi, float Kp, float Ki, float Ts);
 float PI_Update(PI_Controller *pi, float error);
+float OutputLimiter(float input, float upper, float lower);
 
 //
 // Main
@@ -697,6 +723,17 @@ float PI_Update(PI_Controller *pi, float error) {
     return pi->u;
 }
 
+float OutputLimiter(float input, float upper, float lower)
+{
+    //
+    // Reference signal limiter: Limit reference signal [0,1]
+    //
+    if (input >= upper) input = upper;
+    else if (input <= lower) input = lower;
+
+    return input;
+}
+
 //
 // epwm1_isr - EPWM1 ISR
 //
@@ -791,12 +828,19 @@ interrupt void adca1_isr(void)
     if (ctrlFlag != 1)
     {
         PI_Init(&voutPI, FCML_voutPIKp, FCML_voutPIKi, 0.000001f);  // Kp = 0.5, Ki = 10, Ts = 1us
+        PI_Init(&vref1PI, FCML_vref1PIKp, FCML_vref1PIKi, 0.000001f);  // Kp = 0.5, Ki = 10, Ts = 1us
+        PI_Init(&vref2PI, FCML_vref2PIKp, FCML_vref2PIKi, 0.000001f);  // Kp = 0.5, Ki = 10, Ts = 1us
 
         //
         // Reset controller components
         //
         FCML_voutErr = 0;
         FCML_voutStar = 0;
+        FCML_vfcErr = 0;
+        FCML_vfcStar1 = 0;
+        FCML_vfcStar2 = 0;
+        FCML_vrefStar1 = 0;
+        FCML_vrefStar2 = 0;
 
         //
         // Block the CMPA and CMPB values
@@ -814,34 +858,25 @@ interrupt void adca1_isr(void)
         FCML_voutErr = FCML_voutRef - FCML_vout;
         FCML_voutStar = PI_Update(&voutPI, FCML_voutErr);
 
-        //
-        // Reference signal limiter: Limit reference signal [0,1]
-        //
-//        if (FCML_voutStar > 1.0f)
-//        {
-//              FCML_voutStar = 1.0f;
-//         }
-//         else if (FCML_voutStar < 0.0f)
-//        {
-//              FCML_voutStar = 0.0f;
-//         }
-//
-//        if (FCML_voutStar > 1.0f)
-//        {
-//              FCML_voutStar = 1.0f;
-//         }
-//         else if (FCML_voutStar < 0.0f)
-//        {
-//              FCML_voutStar = 0.0f;
-//        }
+        FCML_vfcErr = FCML_vfcRef - FCML_vfc;
+        FCML_vfcStar1 = FCML_vfcErr - 0.0f;
+        FCML_vfcStar2 = 0.0f - FCML_vfcErr;
+
+        FCML_vref1 = PI_Update(&vref1PI, FCML_vfcStar1);
+        FCML_vref2 = PI_Update(&vref2PI, FCML_vfcStar2);
+
+//        FCML_vrefStar1 = FCML_voutStar + FCML_vref1;
+//        FCML_vrefStar2 = FCML_voutStar + FCML_vref2;
+        FCML_vrefStar1 = OutputLimiter(FCML_voutStar + FCML_vref1, 1.0f, 0.0f);
+        FCML_vrefStar2 = OutputLimiter(FCML_voutStar + FCML_vref2, 1.0f, 0.0f);
 
         //
         // PWM Generator: Update the CMPA and CMPB values
         //
-        epwm1_info.EPwmRegHandle->CMPA.bit.CMPA = FCML_voutStar*(float)EPWM1_TIMER_TBPRD;
-        epwm1_info.EPwmRegHandle->CMPB.bit.CMPB = FCML_voutStar*(float)EPWM1_TIMER_TBPRD;
-        epwm2_info.EPwmRegHandle->CMPA.bit.CMPA = FCML_voutStar*(float)EPWM2_TIMER_TBPRD;
-        epwm2_info.EPwmRegHandle->CMPB.bit.CMPB = FCML_voutStar*(float)EPWM2_TIMER_TBPRD;
+        epwm1_info.EPwmRegHandle->CMPA.bit.CMPA = FCML_vrefStar1*(float)EPWM1_TIMER_TBPRD;
+        epwm1_info.EPwmRegHandle->CMPB.bit.CMPB = FCML_vrefStar1*(float)EPWM1_TIMER_TBPRD;
+        epwm2_info.EPwmRegHandle->CMPA.bit.CMPA = FCML_vrefStar2*(float)EPWM2_TIMER_TBPRD;
+        epwm2_info.EPwmRegHandle->CMPB.bit.CMPB = FCML_vrefStar2*(float)EPWM2_TIMER_TBPRD;
     }
     //
     // Update the CMPA and CMPB values
